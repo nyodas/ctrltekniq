@@ -100,6 +100,9 @@ func main() {
 	if err != nil {
 		panic(fmt.Errorf("unable to decode into struct, %v", err))
 	}
+	if err := vaultConfig.Init(); err != nil {
+		panic(fmt.Errorf("Unable to init Vault client, %v", err))
+	}
 
 	hz := &ctrltekniqHttp.HealthzConfig{
 		Hostname: hostname,
