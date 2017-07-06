@@ -1,11 +1,12 @@
 package http
 
 import (
-	"log"
+	log "github.com/sirupsen/logrus"
+
 	"net/http"
 
 	"github.com/nyodas/ctrltekniq/user"
-	vault "github.com/nyodas/ctrltekniq/vault"
+	"github.com/nyodas/ctrltekniq/vault"
 )
 
 type CertsConfig struct {
@@ -27,34 +28,30 @@ func HandlerCerts(hc *HealthzConfig) (http.Handler, error) {
 }
 
 func (h *certsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-
 	remoteUser := r.Header.Get("X-REMOTE-USER")
 	remoteMail := r.Header.Get("X-mail")
 	remoteAffiliation := r.Header.Get("X-eduPersonAffiliation")
 
-	user := user.Client{
+	certsUser := user.Client{
 		Name:   remoteUser,
 		Groups: remoteAffiliation,
 		Mail:   remoteMail,
 	}
-	response, err := h.vc.GetTLSConfig(user)
-
 	statusCode := http.StatusOK
 
+	response, err := h.vc.GetTLSConfig(certsUser)
 	if err != nil {
 		statusCode = http.StatusInternalServerError
-		log.Println(err)
+		log.WithError(err).Error("Failed to get Certificate")
 	}
-
+	h.vc.SaveCertSerial(response.SerialNumber, certsUser.Name)
+	if err != nil {
+		log.WithError(err).Error("Failed to save serial")
+	}
 	w.Header().Set("Content-Type", "application/x-pem-file")
 	w.Header().Set("X-REMOTE-USER", remoteUser)
 	w.Header().Set("X-mail", remoteMail)
 	w.Header().Set("X-eduPersonAffiliation", remoteAffiliation)
 	w.WriteHeader(statusCode)
-	/*data, err := json.MarshalIndent(&response, "", "  ")
-	if err != nil {
-		log.Println(err)
-	}*/
-
-	w.Write([]byte(response))
+	w.Write([]byte(response.ToPEMBundle()))
 }

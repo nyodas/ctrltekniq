@@ -5,3 +5,8 @@ type Client struct {
 	Groups string
 	Mail   string
 }
+
+type serial struct {
+	expired bool
+	revoked bool
+}

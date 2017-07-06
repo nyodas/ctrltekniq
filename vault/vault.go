@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	log "github.com/sirupsen/logrus"
 	"net/http"
 
 	"encoding/json"
@@ -62,10 +63,11 @@ type Config struct {
 	PkiIssueToken string `json:"pki_issue_token" structs:"pki_issue_token" mapstructure:"pki_issue_token"`
 	Pki           pki    `json:"pki" structs:"pki" mapstructure:"pki"`
 	Roles         []role `json:"roles" structs:"roles" mapstructure:"roles"`
-	client        *api.Client
+	Client        *api.Client
 }
 
 func (vc *Config) Init() error {
+	log.Info("Initializing Vault Client & PKI")
 	config := &api.Config{
 		Address: vc.Address,
 	}
@@ -77,11 +79,11 @@ func (vc *Config) Init() error {
 		return err
 	}
 	if client == nil {
-		return errors.New("Returned client was nil")
+		return errors.New("Returned Client was nil")
 	}
-	vc.client = client
+	vc.Client = client
 	vc.Pki.path = "pki/" + vc.Pki.Name
-	vc.client.SetToken(vc.PkiIssueToken)
+	vc.Client.SetToken(vc.PkiIssueToken)
 	if err = vc.pkiInit(); err != nil {
 		return err
 	}
@@ -106,6 +108,21 @@ func (vc *Config) pkiInit() error {
 	return nil
 }
 
+func (vc *Config) secretsInit() error {
+	rootPkiOptions := map[string]interface{}{
+		"common_name": vc.Pki.Name,
+		"ttl":         "87600h",
+	}
+	if err := vc.mount("pki", vc.Pki.path, vc.Pki.Options); err != nil {
+		return err
+	}
+	if _, err := vc.writePost(vc.Pki.path+"/root/generate/internal", rootPkiOptions); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (vc *Config) mount(mountType string, mountPath string, mountConfig api.MountConfigInput) error {
 	mountInfo := &api.MountInput{
 		Type:        mountType,
@@ -114,11 +131,11 @@ func (vc *Config) mount(mountType string, mountPath string, mountConfig api.Moun
 		Local:       false,
 	}
 
-	if err := vc.client.Sys().Mount(mountPath, mountInfo); err != nil {
+	if err := vc.Client.Sys().Mount(mountPath, mountInfo); err != nil {
 		if err != nil && !strings.Contains(err.Error(), "existing mount at") {
 			return err
 		} else {
-			fmt.Printf("%s is already mounted\n", mountPath)
+			log.Warnf("%s is already mounted", mountPath)
 		}
 		err = nil
 	}
@@ -126,7 +143,7 @@ func (vc *Config) mount(mountType string, mountPath string, mountConfig api.Moun
 }
 
 func (vc *Config) write(writePath string, writeInfo map[string]interface{}) (secret *api.Secret, err error) {
-	secret, err = vc.client.Logical().Write(writePath, writeInfo)
+	secret, err = vc.Client.Logical().Write(writePath, writeInfo)
 	if err != nil {
 		return nil, err
 	}
@@ -142,12 +159,12 @@ func (vc *Config) writePost(writePath string, writeInfo map[string]interface{}) 
 }
 
 func (vc *Config) WritePost(path string, data map[string]interface{}) (*api.Secret, error) {
-	r := vc.client.NewRequest("POST", "/v1/"+path)
+	r := vc.Client.NewRequest("POST", "/v1/"+path)
 	if err := r.SetJSONBody(data); err != nil {
 		return nil, err
 	}
 
-	resp, err := vc.client.RawRequest(r)
+	resp, err := vc.Client.RawRequest(r)
 	if resp != nil {
 		defer resp.Body.Close()
 	}
@@ -164,7 +181,7 @@ func (vc *Config) WritePost(path string, data map[string]interface{}) (*api.Secr
 
 func (vc *Config) rolesInit() error {
 	for _, role := range vc.Roles {
-		fmt.Printf("%s path\n", vc.Pki.path+"/roles/"+role.Name)
+		log.WithField("path", vc.Pki.path).WithField("roles", role.Name).Info("Creating role")
 		role.CertConfig.OU = strings.Join(role.Groups, ",")
 		certConfig, _ := json.Marshal(role.CertConfig)
 		var certConfigMap map[string]interface{}
@@ -215,32 +232,44 @@ func (vc *Config) Ping() error {
 	return nil
 }
 
-func (vc *Config) GetTLSConfig(user user.Client) (string, error) {
+func (vc *Config) SaveCertSerial(serial string, name string) (err error) {
+	secret, err := vc.Client.Logical().Read("/secret/" + name)
+	if err != nil {
+		log.WithError(err).Error("Failed to read Serial List")
+	}
+	var newSecret map[string]interface{}
+	newSecret[serial] = true
+	vc.WritePost("/secret/"+name, newSecret)
+	log.WithField("serials", secret).Info("Client serials")
+	return err
+}
+
+func (vc *Config) GetTLSConfig(user user.Client) (certBundle *certutil.CertBundle, err error) {
 	role, err := vc.matchRole(user.Groups)
 	if err != nil {
-		return "", err
+		return certBundle, err
 	}
-	secret, err := vc.client.Logical().Write(vc.Pki.path+"/issue/"+role.Name, map[string]interface{}{
+	secret, err := vc.Client.Logical().Write(vc.Pki.path+"/issue/"+role.Name, map[string]interface{}{
 		"common_name": user.Name,
 		"alt_names":   user.Name + "," + user.Mail,
 	})
 	if err != nil {
-		return "", err
+		return certBundle, err
 	}
 	if secret == nil {
-		return "", fmt.Errorf("Returned secret was nil")
+		return certBundle, fmt.Errorf("Returned secret was nil")
 	}
 
 	parsedCertBundle, err := certutil.ParsePKIMap(secret.Data)
 	if err != nil {
-		return "", fmt.Errorf("Error parsing secret: %s", err)
+		return certBundle, fmt.Errorf("Error parsing secret: %s", err)
 	}
 
-	certBundle, err := parsedCertBundle.ToCertBundle()
+	certBundle, err = parsedCertBundle.ToCertBundle()
 	if err != nil {
-		return "", fmt.Errorf("Error bundling cert: %s", err)
+		return certBundle, fmt.Errorf("Error bundling cert: %s", err)
 	}
-	certPem := certBundle.ToPEMBundle()
+	// certPem := certBundle.ToPEMBundle()
 
 	/*
 		tlsConfig, err := parsedCertBundle.GetTLSConfig(certutil.TLSClient | certutil.TLSServer)
@@ -249,5 +278,5 @@ func (vc *Config) GetTLSConfig(user user.Client) (string, error) {
 		}
 	*/
 
-	return certPem, nil
+	return certBundle, nil
 }
