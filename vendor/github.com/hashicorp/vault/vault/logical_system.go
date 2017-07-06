@@ -1210,7 +1210,7 @@ func (b *SystemBackend) handleMount(
 	}
 
 	// Attempt mount
-	if err := b.Core.mount(me, false); err != nil {
+	if err := b.Core.mount(me); err != nil {
 		b.Backend.Logger().Error("sys: mount failed", "path", me.Path, "error", err)
 		return handleError(err)
 	}
@@ -1642,7 +1642,7 @@ func (b *SystemBackend) handleEnableAuth(
 	}
 
 	// Attempt enabling
-	if err := b.Core.enableCredential(me, false); err != nil {
+	if err := b.Core.enableCredential(me); err != nil {
 		b.Backend.Logger().Error("sys: enable auth mount failed", "path", me.Path, "error", err)
 		return handleError(err)
 	}
@@ -1709,7 +1709,16 @@ func (b *SystemBackend) handlePolicyRead(
 func (b *SystemBackend) handlePolicySet(
 	req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 	name := data.Get("name").(string)
-	rules := data.Get("rules").(string)
+
+	rulesRaw, ok := data.GetOk("rules")
+	if !ok {
+		return logical.ErrorResponse("'rules' parameter not supplied"), nil
+	}
+
+	rules := rulesRaw.(string)
+	if rules == "" {
+		return logical.ErrorResponse("'rules' parameter empty"), nil
+	}
 
 	// Validate the rules parse
 	parse, err := Parse(rules)

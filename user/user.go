@@ -6,7 +6,7 @@ type Client struct {
 	Mail   string
 }
 
-type serial struct {
-	expired bool
-	revoked bool
+type Serial struct {
+	Expired bool
+	Revoked bool
 }

@@ -96,7 +96,7 @@ func (vc *Config) Init() error {
 func (vc *Config) pkiInit() error {
 	rootPkiOptions := map[string]interface{}{
 		"common_name": vc.Pki.Name,
-		"ttl":         "87600h",
+		"ttl":         "2764800",
 	}
 	if err := vc.mount("pki", vc.Pki.path, vc.Pki.Options); err != nil {
 		return err
@@ -238,9 +238,21 @@ func (vc *Config) SaveCertSerial(serial string, name string) (err error) {
 		log.WithError(err).Error("Failed to read Serial List")
 	}
 	var newSecret map[string]interface{}
-	newSecret[serial] = true
-	vc.WritePost("/secret/"+name, newSecret)
-	log.WithField("serials", secret).Info("Client serials")
+	if secret == nil {
+		newSecret = make(map[string]interface{})
+	} else {
+		newSecret = secret.Data
+	}
+	serialContent := &user.Serial{
+		Expired: false,
+		Revoked: false,
+	}
+	newSecret[serial] = *serialContent
+	returnedSecret, err := vc.WritePost("/secret/"+name, newSecret)
+	if err != nil {
+		return err
+	}
+	log.WithField("serials", returnedSecret).Info("Client serials")
 	return err
 }
 
